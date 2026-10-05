@@ -9,9 +9,23 @@ Add the entry for a change in the same commit as the change itself.
 
 ## [Unreleased]
 
+### Changed
+
+- The deepagents middleware no longer uses private parts of deepagents or langchain, so a release that
+  changes their internals does not break it. Its state now follows what the installed deepagents accepts
+  in `skills_metadata`. Suggested skills and `find_skill` results also show a skill's allowed tools, as
+  the full list does.
+- The README reports the prompt cache as input tokens per turn not served from it, the same for Skill Router
+  and the full catalog, instead of the share served, which was lower only because the prompt is smaller.
+
 ### Fixed
 
 - Respect `max_load=0` when confident ranking skips verification: offer the candidate instead (#12).
+- Keep the selected decision when the `on_decision` callback raises; warn once per middleware and continue the turn.
+- An empty skill catalog now returns an empty decision or search results without calling the judge.
+  Empty decisions use the `empty` trace stage to distinguish them from failures.
+- Keep Jev's answer when the `on_usage` callback raises an exception. Warn once per judge with the
+  exception type without exposing the callback's error text. Continue reporting usage on every call.
 - Route messages with image or file attachments using their text, so attachment data does not crowd
   the user's request out of the judge's input.
 

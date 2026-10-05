@@ -4,6 +4,11 @@ Use plain English in issues, commits, documentation and code comments. Follow th
 [development guide](docs/development.md) for code and tests, [design](docs/design.md) for how the
 product behaves, and the [Code of Conduct](CODE_OF_CONDUCT.md) when working with others.
 
+## No signatures
+
+Do not add generated-by lines, tool attribution footers or similar signatures anywhere: not in commits,
+pull requests, reviews, comments, issues, documentation or code.
+
 ## Issues
 
 Check for an existing issue before opening one. Give each issue one clear outcome and a short title
@@ -67,9 +72,9 @@ Work without an issue uses the same one line without the number:
 add the pull request template
 ```
 
-Do not add a commit body, co-author lines, sign-off trailers or generated-by messages. Git still
-records the normal author and committer metadata. Keep unrelated changes out of the commit and inspect
-the staged diff before committing.
+Do not add a commit body, co-author lines, sign-off trailers or any other [signature](#no-signatures).
+Git still records the normal author and committer metadata. Keep unrelated changes out of the commit and
+inspect the staged diff before committing.
 
 Write the [changelog](CHANGELOG.md) entry in the same commit as the change it describes.
 
@@ -124,7 +129,12 @@ Use the [pull request template](.github/pull_request_template.md) with these sec
 
 Keep each section short and avoid repeating the issue or listing every changed file. Add sections only
 when needed, such as migration steps or breaking changes. Link the issue; use `Closes #<number>` when
-the PR completes it. Update the description and affected documentation when the code changes.
+the PR completes it. Update the description and affected documentation when the code changes. Do not
+[sign](#no-signatures) the description.
+
+Open the pull request as a draft while the work is in progress. When it is ready, mark it ready for review
+and request a review from [@deyna256](https://github.com/deyna256) or another maintainer. Do this again after you address
+the review's findings, so the reviewer knows the pull request is ready for another look.
 
 ## Reviews
 
@@ -150,7 +160,7 @@ Use these sections in the review body, and omit a section with nothing in it:
 
 Request changes only when a finding is blocking. Approve when the rest are nits and say which ones you
 expect to be handled. Take work outside the scope of the pull request to a separate issue and link it
-instead of growing the review.
+instead of growing the review. Do not [sign](#no-signatures) the review or its comments.
 
 ## Documentation
 

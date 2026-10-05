@@ -107,6 +107,8 @@ class SkillRouter:
     async def decide(self, turn: Turn) -> Decision:
         """Decide one turn. Any failure means changing nothing, or suggesting the ranked candidates if it was
         verification that failed."""
+        if not self.skills:
+            return Decision(trace=Trace(stage="empty"))
         started = time.monotonic()
         # `_decide` appends to this as soon as ranking finishes. The timeout below fires outside `_decide`,
         # so this is how the handler learns what had already been ranked when the clock ran out.
@@ -161,6 +163,8 @@ class SkillRouter:
 
     async def search(self, query: str, limit: int = 5) -> list[Skill]:
         """Back the `find_skill` tool: the best skills for the model's own query, or nothing on failure."""
+        if not self.skills:
+            return []
         try:
             async with asyncio.timeout(self.settings.timeout):
                 ranking, _ = await self._rank({"request": query[: self.settings.request_chars]}, list(self.skills), limit)

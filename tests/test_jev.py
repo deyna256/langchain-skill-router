@@ -1,5 +1,6 @@
 """The Jev adapter: how it translates questions and how it classifies provider failures."""
 
+import asyncio
 from typing import Any
 
 import httpx2
@@ -69,6 +70,53 @@ async def test_token_usage_is_reported_for_every_call():
     await JevJudge(Client(), on_usage=spent.append).ask({}, {"need": YesNo("Is a skill needed?")})
 
     assert spent == [42]
+
+
+@pytest.mark.parametrize("kind", [KeyError, RuntimeError])
+async def test_usage_callback_failure_preserves_answers_and_logs_without_payload(kind, caplog):
+    def on_usage(tokens):
+        assert tokens == 42
+        raise kind("private metrics label")
+
+    questions = {"skill": Pick("Which one?", {"a": "first", "b": "second"}), "need": YesNo("Is a skill needed?")}
+    expected = await JevJudge(Client()).ask({}, questions)
+    actual = await JevJudge(Client(), on_usage=on_usage).ask({}, questions)
+
+    assert actual == expected
+    assert len(caplog.records) == 1
+    assert caplog.records[0].name == "langchain_skill_router.providers.jev"
+    assert caplog.records[0].levelname == "WARNING"
+    assert "on_usage" in caplog.text
+    assert kind.__name__ in caplog.text
+    assert "private metrics label" not in caplog.text
+    assert caplog.records[0].exc_info is None
+
+
+async def test_usage_callback_cancellation_propagates():
+    def on_usage(tokens):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await JevJudge(Client(), on_usage=on_usage).ask({}, {"need": YesNo("Is a skill needed?")})
+
+
+async def test_usage_callback_warns_once_per_judge_but_keeps_reporting_usage(caplog):
+    spent = []
+
+    def on_usage(tokens):
+        spent.append(tokens)
+        raise RuntimeError("private metrics label")
+
+    judge = JevJudge(Client(), on_usage=on_usage)
+    questions = {"need": YesNo("Is a skill needed?")}
+    answers = await asyncio.gather(*(judge.ask({}, questions) for _ in range(3)))
+
+    assert all(answer["need"].yes == 0.75 for answer in answers)
+    assert spent == [42, 42, 42]
+    assert len(caplog.records) == 1
+
+    await JevJudge(Client(), on_usage=on_usage).ask({}, questions)
+    assert len(caplog.records) == 2
 
 
 @pytest.mark.parametrize("kind", [TypeSafeAuthenticationError, TypeSafePermissionDeniedError])

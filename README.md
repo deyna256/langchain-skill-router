@@ -147,7 +147,7 @@ variants. "Perfect selection" always loads the skill the question was written fo
 | Skills in the prompt, characters per call | **2.6k** | 89.2k | 2.7k |
 | Right skill in front of the model | **85%** | 55% | 97% |
 | Loaded skill was the right one | **96%** (230 of 239) | — | 100% |
-| Input from the prompt cache on a new turn | 77% | 95% | 77% |
+| Input not served from the prompt cache, tokens per turn | 6.8k | 7.1k | 6.4k |
 | Correct answers | **90%** | 88% | 88% |
 | Answers that depend on a rule inside a skill (21 turns) | **76%** | 67% | 62% |
 
@@ -159,8 +159,10 @@ variants. "Perfect selection" always loads the skill the question was written fo
 - **A wrong skill costs the most.** In the 18 turns where the model worked from a wrong skill, 72% of
   answers were correct, against 92% with the right one. Raise `load_at` if your catalog has many
   near-duplicate skills.
-- **The cache holds across turns.** 77% of a new turn's first call came from the cache, against 41% before
-  0.2.2, when the turn's skills were kept out of the conversation.
+- **The prompt cache keeps working.** The provider processed 6.8k new input tokens per turn, against 7.1k
+  with the full catalog (paired over 272 turns: −0.3k, 95% interval −1.2k to +0.7k). Routing shrinks the cached
+  part of the prompt; it does not add work the cache used to save. The share served from the cache is lower
+  (74% against 94%) only because the prompt is smaller.
 
 An earlier run of the same benchmark put Skill Router 5 points *below* the full catalog. The difference was six
 skills in the testbed catalog whose instructions contradicted the rule the expected answer was computed

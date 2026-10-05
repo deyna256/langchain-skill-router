@@ -13,6 +13,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import NodeCancelledError
 
 from langchain_skill_router import Answer, Limits, Pick, Settings, YesNo
 from langchain_skill_router.langchain import SkillRouterMiddleware, is_skill_message, recent_context
@@ -93,6 +94,36 @@ async def test_confident_choice_shows_only_that_skill_and_its_text(backend):
 
     assert "Instruction text for visa-statement" in prompt
     assert "card-limits" not in prompt and "spending-by-category" not in prompt
+
+
+async def test_unsure_choice_lists_candidates_with_paths_to_read(backend, tmp_path):
+    (tmp_path / "skills" / "visa-statement" / "SKILL.md").write_text(
+        f'---\nname: visa-statement\ndescription: "{SKILLS["visa-statement"]}"\nallowed-tools: read_file grep\n---\n\n'
+        "# visa-statement\nInstruction text for visa-statement.\n"
+    )
+    spread = {"visa-statement": 0.6, "spending-by-category": 0.3, "card-limits": 0.1}  # below `load_at`: listed, not loaded
+    admitted = ("need", "fits:visa-statement", "fits:spending-by-category")
+
+    def answer(state: Mapping[str, object], questions: Mapping[str, Pick | YesNo]) -> Mapping[str, Answer]:
+        out: dict[str, Answer] = {}
+        for key, q in questions.items():
+            if isinstance(q, Pick):
+                out[key] = Answer({o: spread[o] for o in q.options})
+            else:
+                out[key] = yes(0.95 if key in admitted else 0.05)
+        return out
+
+    model = await run(backend, ScriptedJudge(answer), [AIMessage("done")])
+    prompt = prompt_text(model.seen[0])
+
+    assert "Instruction text for" not in prompt
+    assert (
+        f"- **visa-statement**: {SKILLS['visa-statement']}\n"
+        "  -> Allowed tools: read_file, grep\n"
+        "  -> Read `/skills/visa-statement/SKILL.md` for full instructions"
+    ) in prompt
+    assert f"- **spending-by-category**: {SKILLS['spending-by-category']}\n  -> Read `" in prompt
+    assert "card-limits" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -311,6 +342,74 @@ async def test_every_decision_is_reported_for_observability(backend):
     await agent.ainvoke({"messages": [HumanMessage("I need a statement for the embassy")]})
 
     assert [d.load for d in seen] == [("visa-statement",)]
+
+
+@pytest.mark.parametrize("kind", [KeyError, RuntimeError])
+async def test_decision_callback_failure_preserves_decision_and_redacts_warning(backend, caplog, kind):
+    def on_decision(decision):
+        raise kind("private metrics label")
+
+    model = RecordingModel(messages=iter([AIMessage("done")]))
+    middleware = SkillRouterMiddleware(
+        backend=backend,
+        sources=["/skills/"],
+        judge=judge_choosing("visa-statement"),
+        on_decision=on_decision,
+    )
+    agent = create_deep_agent(model=model, backend=backend, skills=["/skills/"], middleware=[middleware])
+
+    await agent.ainvoke({"messages": [HumanMessage("I need a statement for the embassy")]})
+
+    assert len(model.seen) == 1
+    assert "Instruction text for visa-statement" in prompt_text(model.seen[0])
+    assert len(caplog.records) == 1
+    assert caplog.records[0].name == "langchain_skill_router.langchain.middleware"
+    assert caplog.records[0].levelname == "WARNING"
+    assert "on_decision" in caplog.text
+    assert kind.__name__ in caplog.text
+    assert "private metrics label" not in caplog.text
+    assert caplog.records[0].exc_info is None
+
+
+async def test_decision_callback_warns_once_per_middleware_but_runs_every_turn(backend, caplog):
+    seen = []
+
+    def on_decision(decision):
+        seen.append(decision)
+        raise RuntimeError("private metrics label")
+
+    middleware = SkillRouterMiddleware(
+        backend=backend,
+        sources=["/skills/"],
+        judge=judge_choosing("visa-statement"),
+        on_decision=on_decision,
+    )
+    for _ in range(2):
+        model = RecordingModel(messages=iter([AIMessage("done")]))
+        agent = create_deep_agent(model=model, backend=backend, skills=["/skills/"], middleware=[middleware])
+        await agent.ainvoke({"messages": [HumanMessage("I need a statement for the embassy")]})
+
+    assert len(seen) == 2
+    assert len(caplog.records) == 1
+
+
+async def test_decision_callback_cancellation_propagates(backend):
+    def on_decision(decision):
+        raise asyncio.CancelledError
+
+    middleware = SkillRouterMiddleware(
+        backend=backend,
+        sources=["/skills/"],
+        judge=judge_choosing("visa-statement"),
+        on_decision=on_decision,
+    )
+    model = RecordingModel(messages=iter([AIMessage("done")]))
+    agent = create_deep_agent(model=model, backend=backend, skills=["/skills/"], middleware=[middleware])
+
+    with pytest.raises(NodeCancelledError) as error:
+        await agent.ainvoke({"messages": [HumanMessage("I need a statement for the embassy")]})
+    assert isinstance(error.value.__cause__, asyncio.CancelledError)
+    assert not model.seen
 
 
 class CatalogMiddleware(AgentMiddleware):

@@ -45,6 +45,10 @@ next version:
 
 ## The turn
 
+When the catalog is empty, `decide()` returns an empty decision with `trace.stage == "empty"`,
+and `search()` returns an empty list. Neither calls the judge. The `empty` stage distinguishes a
+successful empty-catalog decision from a failure, whose stage is blank and whose `failure` records the reason.
+
 ```
 user message
   │
@@ -168,6 +172,11 @@ the message vanished on the next turn and took the conversation's cache with it:
 call of a turn got the conversation from the cache in 16–24% of turns, against 64% without the message. The
 message is marked (`is_skill_message`), is never taken for the user's request and stays out of the judge's
 context. On failure the request goes to the ordinary middleware with the full list.
+
+The middleware relies only on public names of deepagents and langchain. Its state extends the one
+`SkillsMiddleware.state_schema` declares, so it follows whatever the installed deepagents accepts in
+`skills_metadata`, including `None` for a catalog that is not loaded yet. It adds to the system message and
+lists skills with helpers of its own.
 
 The middleware uses the user message's text for the judge's request. Image and file attachments stay
 in the agent's conversation but are not included in the routing request.

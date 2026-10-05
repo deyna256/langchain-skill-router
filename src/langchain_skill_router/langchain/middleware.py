@@ -28,12 +28,11 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated, Any, NotRequired, cast
 
-from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware, SkillsState
-from langchain.agents.middleware.types import ModelRequest, ModelResponse, PrivateStateAttr
+from deepagents.backends import BackendProtocol
+from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
+from langchain.agents.middleware.types import AgentState, ModelRequest, ModelResponse, OmitFromSchema
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
 from langchain_skill_router.core.judge import Judge
@@ -62,14 +61,37 @@ LISTED = """Other skills that may fit (read one's SKILL.md with `read_file`, `li
 {skills_list}"""
 
 
-class SkillRouterState(SkillsState):
-    skill_router_turn: NotRequired[Annotated[str, PrivateStateAttr]]  # id of the user message this decision was made for
-    skill_router_failed: NotRequired[Annotated[bool, PrivateStateAttr]]  # a failure means the ordinary full list
+PRIVATE = OmitFromSchema(input=True, output=True)  # internal to the middleware: not taken in, not returned
+
+
+# The state of the middleware this one replaces, reached through its public `state_schema`: deepagents changes
+# what `skills_metadata` accepts between releases (0.7.16 allows `None` on input to reload the catalog).
+class SkillRouterState(SkillsMiddleware.state_schema):
+    skill_router_turn: NotRequired[Annotated[str, PRIVATE]]  # id of the user message this decision was made for
+    skill_router_failed: NotRequired[Annotated[bool, PRIVATE]]  # a failure means the ordinary full list
 
 
 def is_skill_message(message: AnyMessage) -> bool:
     """The message Skill Router added after a request: not something the user said."""
     return "skill_router" in message.additional_kwargs
+
+
+def skills_list(metadata: Sequence[SkillMetadata]) -> str:
+    """Skills by name and description, each with the path to read, as the ordinary middleware lists them."""
+    lines = []
+    for m in metadata:
+        lines.append(f"- **{m['name']}**: {m['description']}")
+        if m.get("allowed_tools"):
+            lines.append(f"  -> Allowed tools: {', '.join(m['allowed_tools'])}")
+        lines.append(f"  -> Read `{m['path']}` for full instructions")
+    return "\n".join(lines)
+
+
+def with_section(system_message: SystemMessage | None, text: str) -> SystemMessage:
+    """The system message with `text` added as its last block."""
+    blocks = list(system_message.content_blocks) if system_message else []
+    blocks.append({"type": "text", "text": f"\n\n{text}" if blocks else text})
+    return SystemMessage(content_blocks=blocks)
 
 
 def recent_context(messages: Sequence[AnyMessage], limit: int = 6) -> str:
@@ -100,8 +122,10 @@ class SkillRouterMiddleware(SkillsMiddleware):
         on_decision: Callable[[Decision], None] | None = None,
     ) -> None:
         super().__init__(backend=backend, sources=sources)
+        self.backend = backend  # skill texts are read through it
         self.judge, self.settings, self.context = judge, settings, context
         self.on_decision = on_decision  # every decision's trace, for logs, metrics and measurement
+        self._decision_warning_logged = False
         self.tools: list[BaseTool] = [self._find_skill_tool(catalog_hint)]
 
     @property
@@ -110,8 +134,8 @@ class SkillRouterMiddleware(SkillsMiddleware):
 
     # --- the decision: once per new user message ----------------------------------------------------
 
-    async def abefore_model(self, state: SkillsState, runtime: Any) -> dict[str, Any] | None:
-        # The base class fixes this parameter to SkillsState, while `state_schema = SkillRouterState` is what
+    async def abefore_model(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
+        # The base class fixes this parameter to its own state, while `state_schema = SkillRouterState` is what
         # the graph actually builds, so the narrowing has to be stated here rather than in the signature.
         ours = cast(SkillRouterState, state)
         messages = ours["messages"]
@@ -128,14 +152,21 @@ class SkillRouterMiddleware(SkillsMiddleware):
         turn_id = messages[last].id or str(last)
         if ours.get("skill_router_turn") == turn_id:
             return None  # this turn already has a decision
-        router = self._router_from(ours.get("skills_metadata", []))
+        router = self._router_from(ours.get("skills_metadata") or [])
         turn = Turn(request=messages[last].text, context=self.context(messages[:last]))
         decision = await router.decide(turn)
         if self.on_decision:
-            self.on_decision(decision)
+            try:
+                self.on_decision(decision)
+            except Exception as err:
+                # User metrics must not discard a decision. Their error text may contain private data.
+                # One middleware can serve many turns; a broken callback must not flood the log.
+                if not self._decision_warning_logged:
+                    self._decision_warning_logged = True
+                    logger.warning("Skill Router on_decision callback failed (%s); keeping the decision", type(err).__name__)
         if decision.trace.failure:
             return {"skill_router_turn": turn_id, "skill_router_failed": True}
-        by_name = {m["name"]: m for m in ours.get("skills_metadata", [])}
+        by_name = {m["name"]: m for m in (ours.get("skills_metadata") or [])}
         loaded = [n for n in decision.load if n in by_name]
         try:
             texts = {n: await self._text(by_name[n]["path"]) for n in loaded}
@@ -144,7 +175,7 @@ class SkillRouterMiddleware(SkillsMiddleware):
             return {"skill_router_turn": turn_id, "skill_router_failed": True}
         parts = [LOADED.format(name=n, text=t) for n, t in texts.items()]
         if listed := [by_name[n] for n in decision.suggest if n in by_name]:
-            parts.append(LISTED.format(skills_list=self._format_skills_list(listed)))
+            parts.append(LISTED.format(skills_list=skills_list(listed)))
         update: dict[str, Any] = {"skill_router_turn": turn_id, "skill_router_failed": False}
         if parts:
             # Right after the request: the turn's later calls and the next turns all start with it.
@@ -160,7 +191,7 @@ class SkillRouterMiddleware(SkillsMiddleware):
         if "skill_router_turn" not in state or state.get("skill_router_failed"):
             return await super().awrap_model_call(request, handler)  # the ordinary path: the full list
         # The turn's skills are already in the conversation, after the request.
-        return await handler(request.override(system_message=append_to_system_message(request.system_message, PROMPT)))
+        return await handler(request.override(system_message=with_section(request.system_message, PROMPT)))
 
     # --- catalog and search -------------------------------------------------------------------------
 
@@ -177,7 +208,7 @@ class SkillRouterMiddleware(SkillsMiddleware):
     async def _text(self, path: str) -> str:
         """Read a skill's instructions from the backend. Deliberately not cached: an agent that runs for
         days would otherwise keep serving the text a SKILL.md had when it first read it."""
-        [response] = await self._backend.adownload_files([path])
+        [response] = await self.backend.adownload_files([path])
         if response.error or response.content is None:
             raise OSError(f"could not read {path}: {response.error}")
         return response.content.decode()
@@ -192,8 +223,8 @@ class SkillRouterMiddleware(SkillsMiddleware):
             found = await self._router_from(metadata).search(query)
             if not found:
                 return "No matching skill found."
-            paths = {m["name"]: m["path"] for m in metadata}
-            return "\n".join(f"- **{s.name}**: {s.description}\n  -> Read `{paths[s.name]}` for full instructions" for s in found)
+            by_name = {m["name"]: m for m in metadata}
+            return skills_list([by_name[s.name] for s in found])
 
         description = (f"{catalog_hint} " if catalog_hint else "") + (
             "Find skills (step-by-step instructions) for a task that the skills picked for the request don't cover. "

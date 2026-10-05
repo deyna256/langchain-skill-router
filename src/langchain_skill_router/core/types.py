@@ -87,7 +87,7 @@ class Trace:
     failure: str | None = None
     seconds: float = 0.0
     parts: int = 1  # how many parts the catalog was split into for ranking
-    stage: str = ""  # where the decision ended: gate (no skill needed), skip (no verification) or verify
+    stage: str = ""  # where the decision ended: empty (no catalog), gate (no skill needed), skip (no verification) or verify
 
 
 @dataclass(frozen=True)
