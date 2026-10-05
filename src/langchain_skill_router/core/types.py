@@ -84,7 +84,7 @@ class Trace:
     need: float | None = None
     fits: Mapping[str, float] = field(default_factory=dict)  # per candidate: does it do what the request asks
     picked: Mapping[str, float] = field(default_factory=dict)  # verification's pick among the candidates
-    failure: str | None = None
+    failure: str | None = None  # diagnostic text; exception messages may contain private data
     seconds: float = 0.0
     parts: int = 1  # how many parts the catalog was split into for ranking
     stage: str = ""  # where the decision ended: empty (no catalog), gate (no skill needed), skip (no verification) or verify

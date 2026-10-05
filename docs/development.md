@@ -48,7 +48,7 @@ and return a concrete one (`tuple`, `dict`). Use `tuple` for sequences that belo
 
 Validate what the product supplies at construction, not at use: duplicate skill names, empty
 descriptions and settings that cannot fit the provider's limits all raise from `SkillRouter.__init__`.
-A failure at construction is a bug report; the same failure during a turn is a silent fallback.
+A failure at construction is a bug report; the same failure during a turn triggers a fallback.
 
 ## Settings and thresholds
 
@@ -75,8 +75,8 @@ turns, so anything stored on `self` must be derived from the catalog, not from a
 
 Two judge failures, with different handling:
 
-- `JudgeUnavailable` — network, timeout, provider error. Fall back silently to the full catalog and
-  record the reason in `Trace.failure`.
+- `JudgeUnavailable` — network, timeout, provider error. Fall back to the full catalog, log a warning
+  with the exception type, and record the reason in `Trace.failure`.
 - `JudgeMisconfigured` — missing or rejected credentials, an adapter that breaks the contract. Never
   swallowed: it surfaces from `SkillRouter`, and through the middleware on the first turn, where the
   router is built from the turn's catalog.
@@ -118,6 +118,10 @@ accepts a logger argument.
 The request and the context are the end user's own text and may contain personal data. They never
 appear above `DEBUG`. Warnings and errors carry skill names, probabilities, timings and exception
 type names only.
+
+Each decision that returns a failure trace logs one warning with the exception type, or `timeout` for a decision timeout.
+Do not include the exception message or traceback. `Trace.failure` retains the diagnostic message,
+which may contain user requests, context or skill contents; it is not safe to copy into warnings or errors.
 
 `on_decision` is the programmatic hook for metrics and benchmarks. Logging is for people; do not use
 one in place of the other.

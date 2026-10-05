@@ -9,6 +9,11 @@ Add the entry for a change in the same commit as the change itself.
 
 ## [Unreleased]
 
+### Added
+
+- Warn with the exception type or `timeout` when a decision fails, without exposing exception messages
+  or tracebacks. Keep diagnostic details in `Trace.failure`.
+
 ### Changed
 
 - The deepagents middleware no longer uses private parts of deepagents or langchain, so a release that

@@ -1,5 +1,6 @@
 """What the router decides on a turn, given the answers the judge is scripted to give."""
 
+import logging
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -9,6 +10,7 @@ from conftest import skill
 from langchain_skill_router import (
     Answer,
     JudgeMisconfigured,
+    JudgeUnavailable,
     Pick,
     Settings,
     Skill,
@@ -222,6 +224,55 @@ async def test_ranking_failure_changes_nothing():
     assert "provider unavailable" in d.trace.failure
 
 
+async def test_failed_decision_logs_warning_with_error_type(caplog):
+    judge = Boom(fail_on=1, pick={})
+    user_request = "sensitive user inquiry"
+
+    with caplog.at_level(logging.WARNING):
+        d = await SkillRouter(CATALOG, judge).decide(Turn(user_request))
+
+    assert (d.load, d.suggest) == ((), ())
+    assert d.trace.failure is not None
+    assert "provider unavailable" in d.trace.failure
+    assert "Skill Router decision failed: RuntimeError" in caplog.text
+    assert "provider unavailable" not in caplog.text
+    assert user_request not in caplog.text
+    for s in CATALOG:
+        assert s.description not in caplog.text
+
+
+@pytest.mark.parametrize("error_type", [JudgeUnavailable, RuntimeError])
+async def test_each_failed_decision_logs_without_private_exception_details(caplog, error_type):
+    request = "PRIVATE_REQUEST_731"
+    context = "PRIVATE_CONTEXT_842"
+    text = "PRIVATE_SKILL_TEXT_953"
+    ranking = scripted({"visa-statement": 0.6})
+
+    def refuse_verification(state, questions):
+        if "fits:visa-statement" in questions:
+            raise error_type(f"{state['request']} / {state['context']} / {questions['fits:visa-statement'].instructions}")
+        return ranking.script(state, questions)
+
+    router = SkillRouter([skill("visa-statement", text=text)], ScriptedJudge(refuse_verification))
+    with caplog.at_level(logging.WARNING, logger="langchain_skill_router.core.router"):
+        for _ in range(2):
+            decision = await router.decide(Turn(request, context))
+            assert decision.load == ()
+            assert decision.suggest == ("visa-statement",)
+            assert decision.trace.failure is not None
+            for private in (request, context, text):
+                assert private in decision.trace.failure
+
+    records = [record for record in caplog.records if record.name == "langchain_skill_router.core.router"]
+    assert len(records) == 2
+    for record in records:
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == f"Skill Router decision failed: {error_type.__name__}"
+        assert record.exc_info is None
+    for private in (request, context, text):
+        assert private not in caplog.text
+
+
 async def test_slow_judge_is_cut_by_timeout_and_changes_nothing():
     judge = Boom(fail_on=1, pick={}, slow=5)
 
@@ -229,6 +280,16 @@ async def test_slow_judge_is_cut_by_timeout_and_changes_nothing():
 
     assert (d.load, d.suggest) == ((), ())
     assert d.trace.failure == "timeout"
+
+
+async def test_decision_timeout_logs_warning(caplog):
+    judge = Boom(fail_on=1, pick={}, slow=5)
+
+    with caplog.at_level(logging.WARNING):
+        d = await SkillRouter(CATALOG, judge, Settings(timeout=0.05)).decide(Turn("something"))
+
+    assert d.trace.failure == "timeout"
+    assert "Skill Router decision failed: timeout" in caplog.text
 
 
 async def test_the_judges_own_timeout_cuts_each_call_within_a_generous_decision_timeout():
